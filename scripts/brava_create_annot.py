@@ -53,7 +53,7 @@ OTHER_CSQS = ["mature_miRNA_variant", "5_prime_UTR_variant", "3_prime_UTR_varian
               "regulatory_region_ablation", "regulatory_region_amplification", "feature_elongation",
               "regulatory_region_variant", "feature_truncation", "intergenic_variant"]
 
-def get_annot_v2(variant):
+def get_annotation(variant):
     """
     A function to assign variants to a class according to BRAVA's guidelines
     """
@@ -64,7 +64,9 @@ def get_annot_v2(variant):
 
     if variant[args.vep_lof_col] == 'HC':
         annot = 'pLoF'
-    elif variant[args.vep_consequence_col] in MISSENSE_CSQS and ((variant[args.vep_revel_col] >= revel_cutoff or variant[args.vep_cadd_phred_col] >= cadd_cutoff) or variant['max_DS'] >= spliceai_cutoff):
+    elif variant[args.vep_consequence_col] in MISSENSE_CSQS and (variant[args.vep_revel_col] >= revel_cutoff or variant[args.vep_cadd_phred_col] >= cadd_cutoff):
+        annot = 'damaging_missense'
+    elif variant['max_DS'] >= spliceai_cutoff:
         annot = 'damaging_missense'
     elif variant[args.vep_lof_col] == 'LC':
         annot = 'damaging_missense'
@@ -79,37 +81,9 @@ def get_annot_v2(variant):
 
     return annot
 
-def get_annot( variant ):
-    """
-    A function to assign variants to a class according to BRAVA's guidelines
-    """
-    cadd_cutoff = 28.1
-    revel_cutoff = 0.773
-    spliceai_cutoff = 0.20
-
-    if variant[args.vep_lof_col] == 'HC':
-        annot = 'pLoF'
-    elif variant['max_DS'] >= spliceai_cutoff or variant[args.vep_lof_col] == 'LC':
-        # any variant with SpliceAI ≥ 0.2 + LOFTEE LC
-        annot = 'damaging_missense'
-    elif variant[args.vep_consequence_col] in MISSENSE_CSQS and ( variant[args.vep_revel_col] >= revel_cutoff or variant[args.vep_cadd_phred_col] >= cadd_cutoff ):  
-        # missense / start-loss / stop-loss with REVEL ≥ 0.773 AND/OR CADD ≥ 28.1 +
-        annot = 'damaging_missense'
-    elif variant[args.vep_consequence_col] in MISSENSE_CSQS or variant[args.vep_consequence_col] in {'inframe_deletion', 'inframe_insertion'}:
-        # Other missense/protein-altering: missense / start-loss / stop-loss not categorised in (2) + in frame indels
-        annot = 'other_missense'
-    elif variant[args.vep_consequence_col] in OTHER_CSQS:
-        annot = 'non_coding'
-    elif (variant[args.vep_consequence_col] in SYNONYMOUS_CSQS) and (variant['max_DS'] < spliceai_cutoff or pd.isna(variant['max_DS'])):
-        annot = 'synonymous'
-    else:
-        annot = np.nan
-        
-    return annot
-
 def get_spliceAI_DS( value ):
     """
-    Extract the last part from the SpliceAI field, which looks like
+    Extract the DS_max from the SpliceAI field, which looks like
     T|OR11H1---ENSG0123---ENST0123---yes---protein_coding---NM_00123.1|0.00|0.01|0.00|0.03|22|0|-2|8
     Note that we need to consider cases with missing info, for which '.' is returned.
     IMPORTANT, we must also consider the case of multiple spliceAI scores per variant such as:
@@ -164,7 +138,7 @@ def compare_with_hail(vep_df, hail_file):
 
 def write_saige_file(vep_df):
 
-    saige_file = f"{args.work_dir}annotation_no_mane_spliceai_v2_{args.chr}.txt"
+    saige_file = f"{args.work_dir}brava_SAIGE_group_chr{args.chr}.txt"
 
     # write the SAIGE group file to disk
     print(f"Saving the annotation to {saige_file}")
@@ -185,13 +159,6 @@ if __name__=='__main__':
                         args.vep_revel_col, args.vep_cadd_phred_col, args.vep_lof_col, args.vep_consequence_col]
 
     vep_df = pd.read_csv(args.vep, sep='\t', usecols=vep_cols_to_read, na_values='.')
-    print(vep_df)
-
-    # MANE SELECT FILTER
-    #num_total_rows = vep_df.shape[0]
-    #vep_df = vep_df[~vep_df[args.vep_mane_select_col].isna()]
-    #num_kept_rows = vep_df.shape[0]
-    #print(f"MANE SELECT FILTER: {num_kept_rows} out of {num_total_rows} remaining")
 
     # gnomAD maxAF FILTER
     num_total_rows = vep_df.shape[0]
@@ -200,31 +167,34 @@ if __name__=='__main__':
     print(f"gnomAD FILTER: {num_kept_rows} out of {num_total_rows} remaining")
 
     spliceai_df = pd.read_csv(args.spliceai, sep='\t', comment='#', header=None, names=["CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"], na_values='.', index_col='ID')
-    print(spliceai_df)
 
     print("Unique SNP-IDs found with SpliceAI:", np.unique(spliceai_df.index).shape[0])
 
     spliceai_df["spliceai_pairs"] = spliceai_df["INFO"].map(get_spliceAI_DS)
-    print(spliceai_df["spliceai_pairs"])
     spliceai_df = spliceai_df.explode("spliceai_pairs")
-    spliceai_df[["GENE", "DS_max"]] = pd.DataFrame(spliceai_df['spliceai_pairs'].values.tolist(), index=spliceai_df.index)
+    spliceai_df[["GENE", "max_DS"]] = pd.DataFrame(spliceai_df['spliceai_pairs'].values.tolist(), index=spliceai_df.index)
     spliceai_df = spliceai_df.drop(["INFO", "spliceai_pairs"], axis='columns')
 
     # We don't want the ENSEMBL gene ID version - drop the .VERSION
     spliceai_df['GENE'] = spliceai_df['GENE'].astype(str).apply(lambda x: x.split('.')[0])
-    print(spliceai_df)
-
-    #print(spliceai_df[spliceai_df["max_DS"]>0])
 
     # nan max DS_score FILTER
-    #num_total_rows = spliceai_df.shape[0]
-    #spliceai_df = spliceai_df[~spliceai_df["max_DS"].isna()]
-    #num_kept_rows = spliceai_df.shape[0]
-    #print(f"DS_Score FILTER: {num_kept_rows} out of {num_total_rows} remaining")
+    num_total_rows = spliceai_df.shape[0]
+    spliceai_df = spliceai_df[~spliceai_df["max_DS"].isna()]
+    num_kept_rows = spliceai_df.shape[0]
+    print(f"DS_Score FILTER: {num_kept_rows} out of {num_total_rows} remaining")
 
     ## Now generate the annotations
-    #vep_df = vep_df.merge(spliceai_df["max_DS"], left_index=True, right_index=True, how='left')
-    #vep_df["max_DS"] = 0
-    #vep_df["annotation"] = vep_df.apply(get_annot_v2, axis=1)
-    #write_saige_file(vep_df)
+    vep_df = vep_df.merge(spliceai_df, left_on=[args.vep_snp_id_col, args.vep_gene_col], right_on=["ID", "GENE"], how='left')
+    vep_df["annotation"] = vep_df.apply(get_annotation, axis=1)
+
+    # no annotation FILTER
+    num_total_rows = vep_df.shape[0]
+    vep_df = vep_df[~(vep_df['annotation'] == '')]
+    num_kept_rows = vep_df.shape[0]
+    print(f"empty annotation FILTER: {num_kept_rows} out of {num_total_rows} remaining") 
+
+    print(vep_df)
+    vep_df["annotation"].value_counts()
+    write_saige_file(vep_df)
     #compare_with_hail(vep_df, f"/well/lindgren/barney/brava_annotation/data/vep/annotated/v5/ukb_wes_450k.july.qced.brava.v5.3.chr{args.chr}.worst_csq_by_gene_canonical.txt.gz")
