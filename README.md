@@ -1,4 +1,4 @@
-# BRAVA Annotation Creation
+# BRAVA SAIGE Annotation
 
 This script merges VEP with SpliceAI info and generates SAIGE annotations according to BRaVa's guidelines. The required inputs for the annotations by VEP and SpliceAI are table format files (tab-delimited). 
 
