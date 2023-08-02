@@ -169,6 +169,9 @@ if __name__=='__main__':
 
     spliceai_df = pd.read_csv(args.spliceai, sep='\t', comment='#', header=None, names=["CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"], na_values='.', index_col='ID')
 
+    # Redefine ID
+    spliceai_df.ID = spliceai_df.CHROM.astype(str) + ":" + spliceai_df.POS.astype(str)  + ":" + spliceai_df.REF + ":" + spliceai_df.ALT
+
     print("Unique SNP-IDs found with SpliceAI:", np.unique(spliceai_df.index).shape[0])
 
     spliceai_df["spliceai_pairs"] = spliceai_df["INFO"].map(get_spliceAI_DS)
