@@ -22,7 +22,6 @@ python brava_create_annot.py -c <chromosome> -v <path_to_vep_table> -s <path_to_
 * `--vep_gene_col`: Specify the GENE ID column in the VEP table. This is a required argument.
 * `--vep_lof_col`: Specify the LoF column in the VEP table. This is a required argument.
 * `--vep_max_pop_col`: Specify the gnomAD_maxAF column in the VEP table. This is a required argument.
-* `--vep_mane_select_col`: Specify the MANE SELECT column in the VEP table. This is a required argument.
 * `--vep_revel_col`: Specify the REVEL column in the VEP table. This is a required argument.
 * `--vep_cadd_phred_col`: Specify the CADD_PHRED column in the VEP table. This is a required argument.
 * `--vep_consequence_col`: Specify the Consequence column in the VEP table. This is a required argument.

@@ -34,7 +34,6 @@ parser.add_argument("--vep_snp_id_col", help="SNPID (chr:pos:ref:alt) column in 
 parser.add_argument("--vep_gene_col", help="GENEID column in VEP table", required=True, type=str)
 parser.add_argument("--vep_lof_col", help="LoF column in VEP table", required=True, type=str)
 parser.add_argument("--vep_max_pop_col", help="gnomAD_maxAF column in VEP table", required=True, type=str)
-parser.add_argument("--vep_mane_select_col", help="MANE SELECT column in VEP table", required=True, type=str)
 parser.add_argument("--vep_revel_col", help="REVEL column in VEP table", required=True, type=str)
 parser.add_argument("--vep_cadd_phred_col", help="CADD_PHRED column in VEP table", required=True, type=str)
 parser.add_argument("--vep_consequence_col", help="Consequence column in VEP table", required=True, type=str)
@@ -155,7 +154,7 @@ def write_saige_file(vep_df):
 if __name__=='__main__':
     print("Will make the annotation file for chrom-" + args.chr)
 
-    vep_cols_to_read = [args.vep_snp_id_col, args.vep_gene_col, args.vep_lof_col, args.vep_max_pop_col, args.vep_mane_select_col,
+    vep_cols_to_read = [args.vep_snp_id_col, args.vep_gene_col, args.vep_lof_col, args.vep_max_pop_col,
                         args.vep_revel_col, args.vep_cadd_phred_col, args.vep_lof_col, args.vep_consequence_col]
 
     # encoding specified to prevent certain read error - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
