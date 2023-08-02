@@ -158,7 +158,8 @@ if __name__=='__main__':
     vep_cols_to_read = [args.vep_snp_id_col, args.vep_gene_col, args.vep_lof_col, args.vep_max_pop_col, args.vep_mane_select_col,
                         args.vep_revel_col, args.vep_cadd_phred_col, args.vep_lof_col, args.vep_consequence_col]
 
-    vep_df = pd.read_csv(args.vep, sep='\t', usecols=vep_cols_to_read, na_values='.')
+    # encoding specified to prevent certain read error - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
+    vep_df = pd.read_csv(args.vep, sep='\t', usecols=vep_cols_to_read, na_values='.', encoding='cp1252')
 
     # gnomAD maxAF FILTER
     num_total_rows = vep_df.shape[0]
@@ -171,6 +172,10 @@ if __name__=='__main__':
     print("Unique SNP-IDs found with SpliceAI:", np.unique(spliceai_df.index).shape[0])
 
     spliceai_df["spliceai_pairs"] = spliceai_df["INFO"].map(get_spliceAI_DS)
+
+    # Drop nan pairs otherwise crashing - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
+    spliceai_df = spliceai_df[spliceai_df.spliceai_pairs.notna()]
+
     spliceai_df = spliceai_df.explode("spliceai_pairs")
     spliceai_df[["GENE", "max_DS"]] = pd.DataFrame(spliceai_df['spliceai_pairs'].values.tolist(), index=spliceai_df.index)
     spliceai_df = spliceai_df.drop(["INFO", "spliceai_pairs"], axis='columns')
