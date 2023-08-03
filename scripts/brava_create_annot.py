@@ -22,16 +22,23 @@ GK - July 12th, 2023
 import numpy as np
 import pandas as pd
 import argparse
-import warnings 
-warnings.filterwarnings(action='ignore', message='All-NaN axis encountered')
 
 parser = argparse.ArgumentParser(description="Merge VEP with SpliceAI info and generate annotations according to BRaVa's guidelines.")
 parser.add_argument("--chr", "-c", help="which chromosome to precess", required=True, type=str)
 parser.add_argument("--vep", "-v", help="file with VEP annotation (tab-delimited)", required=True, type=str)
-parser.add_argument("--spliceai", "-s", help="file with SpliceAI annotation (tab-delimited; no header)", required=True, type=str)
+parser.add_argument("--spliceai", "-s", help="VCF file with SpliceAI annotations", required=True, type=str)
 parser.add_argument("--work_dir", "-w", help="working directory (optional)", type=str, default='./')
-args = parser.parse_args()
 
+# Columns to read (VEP)
+parser.add_argument("--vep_snp_id_col", help="SNPID (chr:pos:ref:alt) column in VEP table", required=True, type=str)
+parser.add_argument("--vep_gene_col", help="GENEID column in VEP table", required=True, type=str)
+parser.add_argument("--vep_lof_col", help="LoF column in VEP table", required=True, type=str)
+parser.add_argument("--vep_max_pop_col", help="gnomAD_maxAF column in VEP table", required=True, type=str)
+parser.add_argument("--vep_revel_col", help="REVEL column in VEP table", required=True, type=str)
+parser.add_argument("--vep_cadd_phred_col", help="CADD_PHRED column in VEP table", required=True, type=str)
+parser.add_argument("--vep_consequence_col", help="Consequence column in VEP table", required=True, type=str)
+
+args = parser.parse_args()
 
 PLOF_CSQS = ["transcript_ablation", "splice_acceptor_variant", "splice_donor_variant", "stop_gained", "frameshift_variant"]
 
@@ -45,124 +52,156 @@ OTHER_CSQS = ["mature_miRNA_variant", "5_prime_UTR_variant", "3_prime_UTR_varian
               "regulatory_region_ablation", "regulatory_region_amplification", "feature_elongation",
               "regulatory_region_variant", "feature_truncation", "intergenic_variant"]
 
-def get_annot( variant ):
+def get_annotation(variant):
     """
     A function to assign variants to a class according to BRAVA's guidelines
     """
     cadd_cutoff = 28.1
     revel_cutoff = 0.773
     spliceai_cutoff = 0.20
-    if variant.LoF == 'HC':
+
+
+    if variant[args.vep_lof_col] == 'HC':
         annot = 'pLoF'
-    elif variant.SpliceAI_DS_max >= spliceai_cutoff or variant.LoF == 'LC':
-        # any variant with SpliceAI ≥ 0.2 + LOFTEE LC
+    elif variant[args.vep_consequence_col] in MISSENSE_CSQS and (variant[args.vep_revel_col] >= revel_cutoff or variant[args.vep_cadd_phred_col] >= cadd_cutoff):
         annot = 'damaging_missense'
-    elif variant.Consequence in MISSENSE_CSQS and ( variant.REVEL >= revel_cutoff or variant.CADD_PHRED >= cadd_cutoff ):  
-        # missense / start-loss / stop-loss with REVEL ≥ 0.773 AND/OR CADD ≥ 28.1 +
+    elif variant['max_DS'] >= spliceai_cutoff:
         annot = 'damaging_missense'
-    elif variant.Consequence in MISSENSE_CSQS or variant.Consequence in {'inframe_deletion', 'inframe_insertion'}:
-        # Other missense/protein-altering: missense / start-loss / stop-loss not categorised in (2) + in frame indels
+    elif variant[args.vep_lof_col] == 'LC':
+        annot = 'damaging_missense'
+    elif variant[args.vep_consequence_col] in MISSENSE_CSQS or variant[args.vep_consequence_col] in {'inframe_deletion', 'inframe_insertion'}:
         annot = 'other_missense'
-    elif variant.Consequence in OTHER_CSQS:
+    elif variant[args.vep_consequence_col] in OTHER_CSQS:
         annot = 'non_coding'
-    elif variant.Consequence in SYNONYMOUS_CSQS and variant.SpliceAI_DS_max < spliceai_cutoff:
+    elif (variant[args.vep_consequence_col] in SYNONYMOUS_CSQS) and (variant['max_DS'] < spliceai_cutoff or pd.isna(variant['max_DS'])):
         annot = 'synonymous'
     else:
-        annot = 'na'
-        
+        annot = ''
+
     return annot
 
-def get_spliceAI_DS( value, sep='|' ):
+def get_spliceAI_DS( value ):
     """
-    Extract the last part from the SpliceAI field, which looks like
+    Extract the DS_max from the SpliceAI field, which looks like
     T|OR11H1---ENSG0123---ENST0123---yes---protein_coding---NM_00123.1|0.00|0.01|0.00|0.03|22|0|-2|8
     Note that we need to consider cases with missing info, for which '.' is returned.
+    IMPORTANT, we must also consider the case of multiple spliceAI scores per variant such as:
+    SpliceAI=C|ENSG00000276612---ENSG00000276612.3---ENST00000623476.2---yes---protein_coding---|0.00|0.00|0.00|0.00|15|34|47|7,C|GATD3B---ENSG00000280071.4---ENST00000620528.5---yes---protein_coding---NM_001363758.2|0.00|0.00|0.00|0.00|5|-9|47|7
     """
-    tmp = str.split(value, sep='|')
-    if len(tmp)<2:
+
+    # Check if the value is missing
+    if pd.isna(value):
         return np.nan
-    else:
-        return np.max(np.array( tmp[2:6], dtype=float ))
+
+    scores = []
+
+    # Split spliceAI scores
+    spliceai_split = value.split('|')
+    ncols_per_annotation=9
+    n_genes = np.floor(len(spliceai_split) / ncols_per_annotation).astype(int)
+
+    for gene_id in range(n_genes):
+        
+        # Return the maximum of the relevant components
+        start_idx = gene_id * 9
+        DS_max = np.max(np.array(spliceai_split[start_idx+2:start_idx+6], dtype=float))
+
+        split_spliceai_info = spliceai_split[start_idx+1].split('---')
+
+        gene_symbol, gene_id, transcript_id = split_spliceai_info[0], split_spliceai_info[1], split_spliceai_info[2]
+        scores.append((gene_id, DS_max))
+
+    return scores
+
+def compare_with_hail(vep_df, hail_file):
+    hail_vep_df = pd.read_csv(hail_file, sep="\t", na_values="NA")
+    hail_vep_df["consequence_category"] = hail_vep_df["consequence_category"].replace(np.nan, '')
+    print(f"Pandas VEP df size: {vep_df.shape[0]}")
+    print(f"Hail VEP df size: {hail_vep_df.shape[0]}")
+    vep_df = vep_df.rename(columns={'rsid':'varid', 'worst_csq_by_gene_canonical.gene_id': 'gene_id'})
+    print(vep_df, hail_vep_df)
+    merged_df = pd.merge(vep_df, hail_vep_df, on=['varid', 'gene_id'])
+    print(f"Combined df size: {merged_df.shape[0]}")
+    merged_df['consequence_comparison'] = merged_df.apply(
+        lambda row: (row['annotation'] == row['consequence_category']),
+        axis=1
+    )
+
+    print(merged_df[["annotation", "consequence_category"]][merged_df['consequence_comparison'] != True])
+
+    print(merged_df['consequence_comparison'].value_counts())
+
+
+    #print(f"Combined VEP df size: {}")
+
+
+def write_saige_file(vep_df):
+
+    saige_file = f"{args.work_dir}brava_SAIGE_group_chr{args.chr}.txt"
+
+    # write the SAIGE group file to disk
+    print(f"Saving the annotation to {saige_file}")
+    with open(saige_file, 'w') as fout:
+        for gene_id, variants in vep_df.groupby(args.vep_gene_col):
+            annotated = ~variants.annotation.isna()
+
+            snps  = ' '.join([snp for snp in variants[args.vep_snp_id_col][annotated].values])
+            annos = ' '.join([anno for anno in variants.annotation[annotated].values])
+
+            fout.write(f"{gene_id} var {snps}\n")
+            fout.write(f"{gene_id} anno {annos}\n")
     
 if __name__=='__main__':
     print("Will make the annotation file for chrom-" + args.chr)
 
-    cols_to_read = ["Allele","CADD_PHRED","CADD_RAW","CANONICAL", "Consequence","Gene",
-                "gnomAD_AF","gnomAD_AFR_AF","gnomAD_AMR_AF","gnomAD_ASJ_AF","gnomAD_EAS_AF","gnomAD_FIN_AF","gnomAD_NFE_AF","gnomAD_OTH_AF","gnomAD_SAS_AF",
-                "IMPACT","INTRON","LoF","LoF_filter","LoF_flags","LoF_info","MANE_PLUS_CLINICAL","MANE_SELECT","MAX_AF","MAX_AF_POPS",
-                "PolyPhen","REVEL","SIFT","SIFT_pred","SYMBOL","SYMBOL_SOURCE","VARIANT_CLASS","VEP_canonical"]
+    vep_cols_to_read = [args.vep_snp_id_col, args.vep_gene_col, args.vep_lof_col, args.vep_max_pop_col,
+                        args.vep_revel_col, args.vep_cadd_phred_col, args.vep_lof_col, args.vep_consequence_col]
 
-    df1 = pd.read_csv( args.vep, sep='\t', low_memory=True, usecols=cols_to_read, compression='gzip') # encoding='cp1252',
-    # generate SNP IDs as chr:pos:a1:a2 
-    df1['SNPID'] = [':'.join(str.split(x)[:-1]) for x in df1.Allele.values]
-    print("Unique SNP-IDs found in the VEP table:", np.unique(df1.SNPID).shape[0])
+    # encoding specified to prevent certain read error - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
+    vep_df = pd.read_csv(args.vep, sep='\t', usecols=vep_cols_to_read, na_values='.', encoding='cp1252')
 
-    indx = df1.MANE_SELECT != '.'
-    print( "Rows to keep as MANE-Select: {0} out of {1}".format(sum(indx), len(indx) ))
-    df1 = df1[indx]
+    # gnomAD maxAF FILTER
+    num_total_rows = vep_df.shape[0]
+    vep_df = vep_df[(vep_df[args.vep_max_pop_col] <= 0.01) | (vep_df[args.vep_max_pop_col].isna())]
+    num_kept_rows = vep_df.shape[0]
+    print(f"gnomAD FILTER: {num_kept_rows} out of {num_total_rows} remaining")
 
-    temp = df1[ ['gnomAD_AF','gnomAD_AFR_AF','gnomAD_AMR_AF','gnomAD_ASJ_AF','gnomAD_EAS_AF','gnomAD_FIN_AF','gnomAD_NFE_AF','gnomAD_OTH_AF','gnomAD_SAS_AF']].copy()
-    temp.replace('.', np.nan, inplace=True)
-    temp = temp.astype(float)
+    spliceai_df = pd.read_csv(args.spliceai, sep='\t', comment='#', header=None, names=["CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"], na_values='.', index_col='ID')
 
-    df1['gnomAD_maxAF'] = [np.nanmax(x[1]) for x in temp.iterrows()]
+    # Redefine ID
+    spliceai_df.ID = spliceai_df.CHROM.astype(str) + ":" + spliceai_df.POS.astype(str)  + ":" + spliceai_df.REF + ":" + spliceai_df.ALT
 
-    indx = np.isnan( df1.gnomAD_maxAF )
-    print( "Rows to discard due to missing gnomAD AF info (nans): {0} out of {1}".format(sum(indx), len(indx) ))
-    df1 = df1[~indx]
+    print("Unique SNP-IDs found with SpliceAI:", np.unique(spliceai_df.index).shape[0])
 
-    indx = df1['gnomAD_maxAF'] <= 0.01 
-    print( "Rows to discard due to AF filter: {0} out of {1}.".format(len(indx)-sum(indx), len(indx) ))
-    df1 = df1[indx]
+    spliceai_df["spliceai_pairs"] = spliceai_df["INFO"].map(get_spliceAI_DS)
 
-    # read input from SpliceAI
-    df2 = pd.read_csv( args.spliceai, sep='\t', header=None)
-    df2[1] = df2[1].astype(str)
-    df2['SNPID'] = df2[[0,1,3,4]].agg(':'.join, axis=1)
-    df2.set_index('SNPID', inplace=True)
-    print("Unique SNP-IDs found with SpliceAI:", np.unique(df2.index).shape[0])
+    # Drop nan pairs otherwise crashing - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
+    spliceai_df = spliceai_df[spliceai_df.spliceai_pairs.notna()]
 
-    # update the first dataframe with the DS_score
-    temp = df2.loc[ df1.SNPID ][5].values
-    df1['SpliceAI_DS_max'] = [get_spliceAI_DS(x) for x in temp]
-    indx = np.isnan( df1.SpliceAI_DS_max )
-    print( "Rows to discard due to missing SpliceAI info: {0} out of {1}".format(sum(indx), len(indx) ))
-    df1 = df1[~indx]
+    spliceai_df = spliceai_df.explode("spliceai_pairs")
+    spliceai_df[["GENE", "max_DS"]] = pd.DataFrame(spliceai_df['spliceai_pairs'].values.tolist(), index=spliceai_df.index)
+    spliceai_df = spliceai_df.drop(["INFO", "spliceai_pairs"], axis='columns')
+
+    # We don't want the ENSEMBL gene ID version - drop the .VERSION
+    spliceai_df['GENE'] = spliceai_df['GENE'].astype(str).apply(lambda x: x.split('.')[0])
+
+    # nan max DS_score FILTER
+    num_total_rows = spliceai_df.shape[0]
+    spliceai_df = spliceai_df[~spliceai_df["max_DS"].isna()]
+    num_kept_rows = spliceai_df.shape[0]
+    print(f"DS_Score FILTER: {num_kept_rows} out of {num_total_rows} remaining")
 
     ## Now generate the annotations
-    df3 = df1[['SNPID','Gene','LoF','Consequence','REVEL','CADD_PHRED','SpliceAI_DS_max']].copy()
-    df3.replace('.', np.nan, inplace=True)
-    df3 = df3.astype({'REVEL':float,'CADD_PHRED':float})
+    vep_df = vep_df.merge(spliceai_df, left_on=[args.vep_snp_id_col, args.vep_gene_col], right_on=["ID", "GENE"], how='left')
+    vep_df["annotation"] = vep_df.apply(get_annotation, axis=1)
 
-    annot_vars = {}
-    for x in df3[:].iterrows():
-        tmp = get_annot(x[1])
-        annot_vars[ x[1].SNPID ] = ( tmp, x[1].Gene )
+    # no annotation FILTER
+    num_total_rows = vep_df.shape[0]
+    vep_df = vep_df[~(vep_df['annotation'] == '')]
+    num_kept_rows = vep_df.shape[0]
+    print(f"empty annotation FILTER: {num_kept_rows} out of {num_total_rows} remaining") 
 
-    df_annot = pd.DataFrame.from_dict( annot_vars, orient='index' )
-    df_annot.columns = ['Class','Gene']
-
-    total = 0
-    for c in df_annot.Class.unique():
-        x = df_annot.query( 'Class==@c' ).index
-        total += len(x)
-        print( c, len(x) )
-        
-    print("Genes found {0} out of {1} originally.".format( len(df_annot.Gene.unique()), len(df1.Gene.unique())  ))
-
-    # write the resulting annotiation to disk
-    print("Saving the annotation to", args.work_dir+"annotation_"+args.chr+".txt")
-    with open( args.work_dir+"annotation_"+args.chr+".txt", 'w' ) as fout:
-        for gene in df_annot.Gene.unique():
-            temp = df_annot.query( 'Gene==@gene' )
-            fout.write( gene+' var') # , end=''
-            for snpid in temp.index:
-                fout.write( ' ' + snpid)  
-                
-            fout.write( '\n' + gene + ' anno')
-            for snpid in temp.index:
-                fout.write( ' ' + temp.loc[snpid].Class ) 
-            
-            fout.write('\n')
-
-# end-of-script
+    print(vep_df)
+    vep_df["annotation"].value_counts()
+    write_saige_file(vep_df)
+    #compare_with_hail(vep_df, f"/well/lindgren/barney/brava_annotation/data/vep/annotated/v5/ukb_wes_450k.july.qced.brava.v5.3.chr{args.chr}.worst_csq_by_gene_canonical.txt.gz")
