@@ -34,6 +34,7 @@ parser.add_argument("--vep_snp_id_col", help="SNPID (chr:pos:ref:alt) column in 
 parser.add_argument("--vep_gene_col", help="GENEID column in VEP table", required=True, type=str)
 parser.add_argument("--vep_lof_col", help="LoF column in VEP table", required=True, type=str)
 parser.add_argument("--vep_max_pop_col", help="gnomAD_maxAF column in VEP table", required=True, type=str)
+parser.add_argument("--vep_mane_select_col", help="MANE SELECT column in VEP table", required=True, type=str)
 parser.add_argument("--vep_revel_col", help="REVEL column in VEP table", required=True, type=str)
 parser.add_argument("--vep_cadd_phred_col", help="CADD_PHRED column in VEP table", required=True, type=str)
 parser.add_argument("--vep_consequence_col", help="Consequence column in VEP table", required=True, type=str)
@@ -52,6 +53,13 @@ OTHER_CSQS = ["mature_miRNA_variant", "5_prime_UTR_variant", "3_prime_UTR_varian
               "regulatory_region_ablation", "regulatory_region_amplification", "feature_elongation",
               "regulatory_region_variant", "feature_truncation", "intergenic_variant"]
 
+def intersection_A_B ( A, B ):
+    "A simple function to check if two iterables share any elements."
+    if np.intersect1d( A, B ).shape[0] > 0:
+        return True
+    else:
+        return False
+    
 def get_annotation(variant):
     """
     A function to assign variants to a class according to BRAVA's guidelines
@@ -60,20 +68,21 @@ def get_annotation(variant):
     revel_cutoff = 0.773
     spliceai_cutoff = 0.20
 
+    var_consq = variant[args.vep_consequence_col].split('&')
 
     if variant[args.vep_lof_col] == 'HC':
         annot = 'pLoF'
-    elif variant[args.vep_consequence_col] in MISSENSE_CSQS and (variant[args.vep_revel_col] >= revel_cutoff or variant[args.vep_cadd_phred_col] >= cadd_cutoff):
+    elif intersection_A_B( var_consq, MISSENSE_CSQS ) and (variant[args.vep_revel_col] >= revel_cutoff or variant[args.vep_cadd_phred_col] >= cadd_cutoff):
         annot = 'damaging_missense'
     elif variant['max_DS'] >= spliceai_cutoff:
         annot = 'damaging_missense'
     elif variant[args.vep_lof_col] == 'LC':
         annot = 'damaging_missense'
-    elif variant[args.vep_consequence_col] in MISSENSE_CSQS or variant[args.vep_consequence_col] in {'inframe_deletion', 'inframe_insertion'}:
+    elif intersection_A_B( var_consq, MISSENSE_CSQS ) or intersection_A_B( var_consq, ['inframe_deletion', 'inframe_insertion'] ):
         annot = 'other_missense'
-    elif variant[args.vep_consequence_col] in OTHER_CSQS:
+    elif intersection_A_B( var_consq, OTHER_CSQS ):
         annot = 'non_coding'
-    elif (variant[args.vep_consequence_col] in SYNONYMOUS_CSQS) and (variant['max_DS'] < spliceai_cutoff or pd.isna(variant['max_DS'])):
+    elif (intersection_A_B( var_consq, SYNONYMOUS_CSQS )) and (variant['max_DS'] < spliceai_cutoff or pd.isna(variant['max_DS'])):
         annot = 'synonymous'
     else:
         annot = ''
@@ -154,11 +163,10 @@ def write_saige_file(vep_df):
 if __name__=='__main__':
     print("Will make the annotation file for chrom-" + args.chr)
 
-    vep_cols_to_read = [args.vep_snp_id_col, args.vep_gene_col, args.vep_lof_col, args.vep_max_pop_col,
+    vep_cols_to_read = [args.vep_snp_id_col, args.vep_gene_col, args.vep_lof_col, args.vep_max_pop_col, args.vep_mane_select_col,
                         args.vep_revel_col, args.vep_cadd_phred_col, args.vep_lof_col, args.vep_consequence_col]
 
-    # encoding specified to prevent certain read error - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
-    vep_df = pd.read_csv(args.vep, sep='\t', usecols=vep_cols_to_read, na_values='.', encoding='cp1252')
+    vep_df = pd.read_csv(args.vep, sep='\t', usecols=vep_cols_to_read, na_values='.')
 
     # gnomAD maxAF FILTER
     num_total_rows = vep_df.shape[0]
@@ -168,16 +176,9 @@ if __name__=='__main__':
 
     spliceai_df = pd.read_csv(args.spliceai, sep='\t', comment='#', header=None, names=["CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"], na_values='.', index_col='ID')
 
-    # Redefine ID
-    spliceai_df.ID = spliceai_df.CHROM.astype(str) + ":" + spliceai_df.POS.astype(str)  + ":" + spliceai_df.REF + ":" + spliceai_df.ALT
-
     print("Unique SNP-IDs found with SpliceAI:", np.unique(spliceai_df.index).shape[0])
 
     spliceai_df["spliceai_pairs"] = spliceai_df["INFO"].map(get_spliceAI_DS)
-
-    # Drop nan pairs otherwise crashing - https://github.com/BRaVa-genetics/variant-annotation-python/pull/3#issuecomment-1661885882
-    spliceai_df = spliceai_df[spliceai_df.spliceai_pairs.notna()]
-
     spliceai_df = spliceai_df.explode("spliceai_pairs")
     spliceai_df[["GENE", "max_DS"]] = pd.DataFrame(spliceai_df['spliceai_pairs'].values.tolist(), index=spliceai_df.index)
     spliceai_df = spliceai_df.drop(["INFO", "spliceai_pairs"], axis='columns')
